@@ -1,7 +1,10 @@
 import jpype as jp
 import numpy as np
 from pyspi import utils
-from oct2py import octave, Struct
+try:
+    from oct2py import octave, Struct
+except Exception:
+    pass
 import copy
 import os
 import logging
@@ -11,13 +14,13 @@ from pyspi.base import Undirected, Directed, Unsigned, parse_univariate, parse_b
 """
 Contains relevant dependence statistics from the information theory community.
 """
-if not jp.isJVMStarted():
-    jarloc = (
-        os.path.dirname(os.path.abspath(__file__)) + "/../lib/jidt/infodynamics.jar"
-    )
-    # Change to debug info
-    logging.debug(f"Starting JVM with java class {jarloc}.")
-    jp.startJVM(jp.getDefaultJVMPath(), "-ea", "-Djava.class.path=" + jarloc)
+# if not jp.isJVMStarted():
+#     jarloc = (
+#         os.path.dirname(os.path.abspath(__file__)) + "/../lib/jidt/infodynamics.jar"
+#     )
+#     # Change to debug info
+#     logging.debug(f"Starting JVM with java class {jarloc}.")
+#     jp.startJVM(jp.getDefaultJVMPath(), "-ea", "-Djava.class.path=" + jarloc)
 
 
 class JIDTBase(Unsigned):
@@ -35,6 +38,7 @@ class JIDTBase(Unsigned):
     _TAU_SEARCH_MAX_PROP_NAME = "AUTO_EMBED_TAU_SEARCH_MAX"
     _BIAS_CORRECTION = "BIAS_CORRECTION"
     _NORMALISE = "NORMALISE"
+    _SEED = "NOISE_SEED"
 
     _base_class = jp.JPackage("infodynamics.measures.continuous")
 
@@ -101,6 +105,7 @@ class JIDTBase(Unsigned):
             calc.setProperty(self._NNK_PROP_NAME, str(self._prop_k))
 
         calc.setProperty(self._BIAS_CORRECTION, "false")
+        calc.setProperty(self._SEED, "42")
 
         return calc
 
@@ -292,13 +297,13 @@ class MutualInfo(JIDTBase, Undirected):
             logging.warning(
                 "MI calcs failed. Maybe check input data for Cholesky factorisation?"
             )
-            return np.NaN
+            return np.nan
 
 
-class TimeLaggedMutualInfo(MutualInfo):
+class TimeLaggedMutualInfo(JIDTBase, Directed):
     name = "Time-lagged mutual information"
     identifier = "tlmi"
-    labels = ["unsigned", "infotheory", "temporal", "undirected"]
+    labels = ["unsigned", "infotheory", "temporal", "directed"]
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -326,7 +331,7 @@ class TimeLaggedMutualInfo(MutualInfo):
             logging.warning(
                 "Time-lagged MI calcs failed. Maybe check input data for Cholesky factorisation?"
             )
-            return np.NaN
+            return np.nan
 
 
 class TransferEntropy(JIDTBase, Directed):
@@ -400,7 +405,7 @@ class TransferEntropy(JIDTBase, Directed):
             return self._calc.computeAverageLocalOfObservations()
         except Exception as err:
             logging.warning(f"TE calcs failed: {err}.")
-            return np.NaN
+            return np.nan
 
 
 class CrossmapEntropy(JIDTBase, Directed):

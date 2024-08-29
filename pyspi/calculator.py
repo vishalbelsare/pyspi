@@ -8,7 +8,7 @@ from scipy import stats
 
 # From this package
 from .data import Data
-from .utils import convert_mdf_to_ddf
+from .utils import convert_mdf_to_ddf, check_optional_deps, inspect_calc_results
 
 
 class Calculator:
@@ -31,15 +31,21 @@ class Calculator:
         labels (array_like, optional):
             Any set of strings by which you want to label the calculator. This can be useful later for classification purposes, defaults to None.
         subset (str, optional):
-            A pre-configured subset of SPIs to use. Options are "all", "fast", "sonnet", "octaveless", or "fabfour", defaults to "all".
+            A pre-configured subset of SPIs to use. Options are "all", "fast", "sonnet", or "fabfour", defaults to "all".
         configfile (str, optional):
             The location of the YAML configuration file for a user-defined subset. See :ref:`Using a reduced SPI set`, defaults to :code:`'</path/to/pyspi>/pyspi/config.yaml'`
+        normalise (bool, optional):
+            Normalise the dataset along the time axis before computing SPIs, defaults to True.
     """
+    _optional_dependencies = None
 
     def __init__(
-        self, dataset=None, name=None, labels=None, subset="all", configfile=None
+        self, dataset=None, name=None, labels=None, subset="all", configfile=None,
+        normalise=True
     ):
         self._spis = {}
+        self._excluded_spis = list()
+        self._normalise = normalise
 
         # Define configfile by subset if it was not specified
         if configfile is None:
@@ -55,17 +61,20 @@ class Calculator:
                 configfile = (
                     os.path.dirname(os.path.abspath(__file__)) + "/fabfour_config.yaml"
                 )
-            elif subset == "octaveless":
-                configfile = (
-                    os.path.dirname(os.path.abspath(__file__)) + "/octaveless_config.yaml"
-                )
             # If no configfile was provided but the subset was not one of the above (or the default 'all'), raise an error
             elif subset != "all":
                 raise ValueError(
-                    f"Subset '{subset}' does not exist. Try 'all' (default), 'fast', 'sonnet', 'octaveless', or 'fabfour'."
+                    f"Subset '{subset}' does not exist. Try 'all' (default), 'fast', 'sonnet', or 'fabfour'."
                 )
             else:
                 configfile = os.path.dirname(os.path.abspath(__file__)) + "/config.yaml"
+
+        # add dependency checks here if the calculator is being instantiated for the first time
+        if not Calculator._optional_dependencies:
+            # check if optional dependencies exist
+            print("Checking if optional dependencies exist...")
+            Calculator._optional_dependencies = check_optional_deps()
+
         self._load_yaml(configfile)
 
         duplicates = [
@@ -79,7 +88,38 @@ class Calculator:
         self._name = name
         self._labels = labels
 
-        print("Number of SPIs: {}".format(len(self.spis)))
+        print(f"="*100)
+        print(f"Number of SPIs: {len(self.spis)}\n")
+        if len(self._excluded_spis) > 0:
+            missing_deps = [dep for dep, is_met in self._optional_dependencies.items() if not is_met]
+            print("**** SPI Initialisation Warning ****")
+            print("\nSome dependencies were not detected, which has led to the exclusion of certain SPIs:")
+            print("\nMissing Dependencies:")
+
+            for dep in missing_deps:
+                print(f"- {dep}")
+
+            print(f"\nAs a result, a total of {len(self._excluded_spis)} SPI(s) have been excluded:\n")
+
+            dependency_groups = {}
+            for spi in self._excluded_spis:
+                for dep in spi[1]: 
+                    if dep not in dependency_groups:
+                        dependency_groups[dep] = []
+                    dependency_groups[dep].append(spi[0])
+
+            for dep, spis in dependency_groups.items():
+                print(f"\nDependency - {dep} - affects {len(spis)} SPI(s)")
+                print("Excluded SPIs:")
+                for spi in spis:
+                    print(f"  - {spi}")
+
+            print(f"\n" + "="*100)
+            print("\nOPTIONS TO PROCEED:\n")
+            print(f"  1) Install the following dependencies to access all SPIs: [{', '.join(missing_deps)}]")
+            callable_name = "{Calculator/CalculatorFrame}"
+            print(f"  2) Continue with a reduced set of {self.n_spis} SPIs by calling {callable_name}.compute(). \n")
+            print(f"="*100 + "\n")
 
         if dataset is not None:
             self.load_dataset(dataset)
@@ -180,10 +220,20 @@ class Calculator:
                 print("*** Importing module {}".format(module_name))
                 module = importlib.import_module(module_name, __package__)
                 for fcn in yf[module_name]:
+                    deps = yf[module_name][fcn].get('dependencies')
+                    if deps is not None:
+                        all_deps_met = all(Calculator._optional_dependencies.get(dep, False) for dep in deps)
+                        if not all_deps_met:
+                            current_base_spi = yf[module_name][fcn]
+                            print(f"Optional dependencies: {deps} not met. Skipping {len(current_base_spi.get('configs'))} SPI(s):")
+                            for params in current_base_spi.get('configs'):
+                                print(f"*SKIPPING SPI: {module_name}.{fcn}(x,y,{params})...")
+                                self._excluded_spis.append([f"{fcn}(x,y,{params})", deps])
+                            continue
                     try:
-                        for params in yf[module_name][fcn]:
+                        for params in yf[module_name][fcn].get('configs'):
                             print(
-                                f"[{self.n_spis}] Adding SPI {module_name}.{fcn}(x,y,{params})..."
+                                f"[{self.n_spis}] Adding SPI {module_name}.{fcn}(x,y,{params})"
                             )
                             spi = getattr(module, fcn)(**params)
                             self._spis[spi.identifier] = spi
@@ -206,7 +256,7 @@ class Calculator:
                 New dataset to attach to calculator.
         """
         if not isinstance(dataset, Data):
-            self._dataset = Data(Data.convert_to_numpy(dataset))
+            self._dataset = Data(Data.convert_to_numpy(dataset), normalise=self._normalise)
         else:
             self._dataset = dataset
 
@@ -216,7 +266,7 @@ class Calculator:
         self._table = pd.DataFrame(
             data=np.full(
                 (self.dataset.n_processes, self.n_spis * self.dataset.n_processes),
-                np.NaN,
+                np.nan,
             ),
             columns=columns,
             index=self._dataset.procnames,
@@ -239,15 +289,17 @@ class Calculator:
                 S = self._spis[spi].multivariate(self.dataset)
 
                 # Ensure the diagonal is NaN (sometimes set within the functions)
-                np.fill_diagonal(S, np.NaN)
+                np.fill_diagonal(S, np.nan)
 
                 # Save results
                 self._table[spi] = S
             except Exception as err:
                 warnings.warn(f'Caught {type(err)} for SPI "{spi}": {err}')
-                self._table[spi] = np.NaN
+                self._table[spi] = np.nan
         pbar.close()
-
+        print(f"\nCalculation complete. Time taken: {pbar.format_dict['elapsed']:.4f}s")
+        inspect_calc_results(self)
+        
     def _rmmin(self):
         """Iterate through all spis and remove the minimum (fixes absolute value errors when correlating)"""
         for spi in self.spis:
